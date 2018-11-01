@@ -27,12 +27,13 @@ def sri(sleep,epochs_per_day=1440):
     '''Returns the approximate sleep regularity index, a measure of sleep consistency, for this activity'''
     sleep_mat = np.reshape(sleep,(epochs_per_day,-1),order='F')
     assert len(sleep_mat[0]) == len(sleep)/epochs_per_day
-    sri = [match24(x) for x in sleep_mat if len(x)>1]
+    sri = [match24(x) for x in sleep_mat if np.sum(~np.isnan(np.diff(x)))>0]
     return 200*np.mean(sri)-100
 
 def match24(x):
     assert np.ndim(x)==1
     m = np.diff(x)
+    m = m[~np.isnan(m)]
     m = (m+1)%2
     return sum(m)/len(m)
 
@@ -47,10 +48,22 @@ def main():
                         help='column name in line 1 of \'fn\' (csv file) to be used as sleep values (default: sleep)')
     args = parser.parse_args()
     
-    sleep = pd.read_csv(args.fn)[args.column].values
-    assert len(sleep)%args.epochs == 0
-    print('Processed %i days of data' % (len(sleep)//args.epochs))
-    print('Calculated SRI (with %i epochs per day) is %.2f' % (args.epochs,sri(sleep,epochs_per_day=args.epochs)))
+    print('\nCalculating SRI values from the %s column of %s based on %i epochs per day' % (args.column,args.fn,args.epochs))
+    
+    df = pd.read_csv(args.fn)
+    if len(df.columns)<2:
+        print('\nWarning: Your file contains only one column, which will prevent missing values from being detected.\nIf your data may contain missing values, please add an index column to your file before processing.\n')
+    
+    sleep = df[args.column].values
+    
+    n_epochs = len(sleep)
+    n_days = len(sleep)//args.epochs
+    trailing_epochs = len(sleep)%args.epochs
+    sleep = sleep[:args.epochs*n_days]
+    
+    print('Found %i epochs and %i complete days. Discarding %i trailing epochs' % (n_epochs,n_days,trailing_epochs))
+    print('Found %i missing sleep values, which will be ignored during SRI calculation' % np.sum(np.isnan(sleep)))
+    print('\nThe calculated SRI is %.4f' % (sri(sleep,epochs_per_day=args.epochs)))
     
 if __name__ == "__main__":
     main()
