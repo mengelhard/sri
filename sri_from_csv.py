@@ -1,74 +1,131 @@
 #!/usr/bin/env python
 
-"""sri_from_csv.py: Calculate the Sleep Regularity Index from sleep/wake data
+"""sri_from_csv.py: Calculate the Sleep Regularity Index (SRI) and Sleep Midpoint from sleep/wake data
 
-usage: sri_from_csv.py [-h] [-e [EPOCHS]] [-c [COLUMN]] fn
-example: sri_from_csv.py -e 2880 test.csv
+usage: sri_from_csv.py [-h] [-e [EPOCHS_PER_DAY]] [-c [SLEEP_COLUMN]] [-p | --plot | --no-plot] filename
 
-Calculate the Sleep Regularity Index from sleep/wake data
+Calculate the Sleep Regularity Index (SRI) and Sleep Midpoint from sleep/wake data
 
 positional arguments:
-  fn                    csv file where sleep data is located (in column 'sleepcol')
+  filename              csv file where sleep data is located (in column 'sleep_column')
 
 optional arguments:
   -h, --help            show this help message and exit
-  -e [EPOCHS], --epochs [EPOCHS]
-                        number of epochs per day (default: 1440)
-  -c [COLUMN], --column [COLUMN]
-                        column name in line 1 of 'fn' (csv file) to be used as sleep values (default: sleep)"""
+  -e [EPOCHS_PER_DAY], --epochs_per_day [EPOCHS_PER_DAY]
+                        number of epochs per day
+  -c [SLEEP_COLUMN], --sleep_column [SLEEP_COLUMN]
+                        column name in line 1 of 'filename' to be used as sleep values (0 = wake, 1 = sleep)
+  -p, --plot, --no-plot
+                        plot sleep values (default: False)"""
 
 from __future__ import print_function
 
 import argparse
+import warnings
 import numpy as np
 import pandas as pd
 
-def sri(sleep,epochs_per_day=1440):
-    '''Returns the approximate sleep regularity index, a measure of sleep consistency, for this activity'''
-    sleep_mat = np.reshape(sleep,(epochs_per_day,-1),order='F')
-    assert len(sleep_mat[0]) == len(sleep)/epochs_per_day
-    sri = [match24(x) for x in sleep_mat if np.sum(~np.isnan(np.diff(x)))>0]
-    return 200*np.mean(sri)-100
 
-def match24(x):
-    assert np.ndim(x)==1
-    m = np.diff(x)
-    m = m[~np.isnan(m)]
-    m = (m+1)%2
-    return sum(m)/len(m)
+def calculate_sri(arr, epochs_per_day=1440):
+    return 200 * np.nanmean(arr[:-epochs_per_day] == arr[epochs_per_day:]) - 100
+
+
+def calculate_midpoint(arr, epochs_per_day=1440, start_epoch=0):
+    '''Circular mean:
+    Note that sleep==1 -> sleep, sleep==0 -> wake'''
+
+    sleep_mat = np.reshape(arr, (-1, epochs_per_day))
+
+    cosines = np.cos(np.arange(epochs_per_day) * 2 * np.pi / epochs_per_day)[None, :]
+    sines = np.sin(np.arange(epochs_per_day) * 2 * np.pi / epochs_per_day)[None, :]
+
+    tm = (
+        epochs_per_day *
+        np.arctan2(
+            np.nansum(sines * sleep_mat),
+            np.nansum(cosines * sleep_mat)
+        )
+        // (2 * np.pi)
+    )
+
+    return (tm + start_epoch) % epochs_per_day
+
+
+def remove_trailing_epochs(arr, epochs_per_day=1440):
+
+    extra_epochs = len(arr) % epochs_per_day
+
+    if extra_epochs > 0:
+        warnings.warn('Removing %i trailing epochs' % extra_epochs)
+        return arr[:-extra_epochs]
+    else:
+        return arr.copy()
+
+
+def plot_sleep(arr, epochs_per_day=2880, cmap='Greys', **kwargs):
+
+    import matplotlib.pyplot as plt
+
+    plt.matshow(
+        arr.reshape((-1, epochs_per_day)),
+        cmap=cmap,
+        aspect=400,
+        **kwargs
+    )
+
+    ticks = np.arange(13) * (epochs_per_day // 12)
+
+    plt.xticks(ticks=ticks, labels=ticks, rotation='45')
+    plt.xlabel('Epoch')
+    plt.ylabel('Day')
+
+    plt.show()
+
 
 def main():
 
-    parser = argparse.ArgumentParser(description='Calculate the Sleep Regularity Index from sleep/wake data')
-    parser.add_argument('fn', type=str,
-                        help='csv file where sleep data is located (in column \'sleepcol\')')
-    parser.add_argument('-e', '--epochs', type=int, nargs='?', default=1440,
-                        help='number of epochs per day (default: 1440)')
-    parser.add_argument('-c', '--column', type=str, nargs='?', default='sleep',
-                        help='column name in line 1 of \'fn\' (csv file) to be used as sleep values (default: sleep)')
+    parser = argparse.ArgumentParser(
+        description='Calculate the Sleep Regularity Index (SRI) and Sleep Midpoint from sleep/wake data')
+    parser.add_argument(
+        'filename', type=str,
+        help='csv file where sleep data is located (in column \'sleep_column\')')
+    parser.add_argument(
+        '-e', '--epochs_per_day', type=int, nargs='?', default=1440,
+        help='number of epochs per day')
+    parser.add_argument(
+        '-c', '--sleep_column', type=str, nargs='?', default='sleep',
+        help='column name in line 1 of \'filename\' to be used as sleep values (0 = wake, 1 = sleep)')
+    parser.add_argument(
+        '-p', '--plot', action=argparse.BooleanOptionalAction, default=False,
+        help='plot sleep values')
     args = parser.parse_args()
     
-    print('\nCalculating SRI values from the %s column of %s based on %i epochs per day' % (args.column,args.fn,args.epochs))
+    print()
+    print('Calculating SRI values from the %s column of %s based on %i epochs per day' % (
+        args.sleep_column, args.filename, args.epochs_per_day
+    ))
     
-    df = pd.read_csv(args.fn)
-    if len(df.columns)<2:
-        print('\nWarning: Your file contains only one column, which will prevent missing values from being detected.\nIf your data may contain missing values, please add an index column to your file before processing.\n')
-    
-    sleep = df[args.column].values
+    df = pd.read_csv(args.filename)
+
+    sleep = df[args.sleep_column].values
     
     n_epochs = len(sleep)
-    n_days = len(sleep)//args.epochs
-    trailing_epochs = len(sleep)%args.epochs
-    sleep = sleep[:args.epochs*n_days]
+    n_days = len(sleep) // args.epochs_per_day
+    sleep = remove_trailing_epochs(sleep[:args.epochs_per_day * n_days])
+
+    sri = calculate_sri(sleep, epochs_per_day=args.epochs_per_day)
+    midpoint = calculate_midpoint(sleep, epochs_per_day=args.epochs_per_day)
     
-    print('Found %i epochs and %i complete days. Discarding %i trailing epochs' % (n_epochs,n_days,trailing_epochs))
-    print('Found %i missing sleep values, which will be ignored during SRI calculation' % np.sum(np.isnan(sleep)))
-    print('\nThe calculated SRI is %.4f' % (sri(sleep,epochs_per_day=args.epochs)))
+    print()
+    print('Found %i epochs and %i complete days' % (n_epochs, n_days))
+    print('Found %i missing sleep values, which will be ignored' % np.sum(np.isnan(sleep)))
+    print()
+    print('The calculated SRI is %.1f' % sri)
+    print('The calculated sleep midpoint is epoch %i' % midpoint)
+
+    if args.plot:
+        plot_sleep(sleep)
+
     
 if __name__ == "__main__":
     main()
-    
-__author__      = "Matthew Engelhard"
-__copyright__   = "Copyright 2018, Matthew Engelhard"
-__license__ = "MIT"
-__email__ = "m.engelhard@duke.edu"
